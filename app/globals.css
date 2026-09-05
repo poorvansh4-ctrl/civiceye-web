@@ -1,26 +1,208 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--bg-card);
+  --color-card-hover: var(--bg-card-hover);
+  --color-surface: var(--bg-surface);
+  --color-border: var(--border-primary);
+  --color-border-secondary: var(--border-secondary);
+  --color-muted: var(--text-muted);
+  --color-secondary: var(--text-secondary);
+  --color-accent: var(--accent-blue);
+  --color-accent-hover: var(--accent-blue-hover);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  /* Extra small breakpoint (e.g. tiny phones 360-414px). */
+  --breakpoint-xs: 24rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root {
+  --bg-primary: #0f1419;
+  --bg-secondary: #1a1f2e;
+  --bg-tertiary: #242938;
+  --bg-card: #1e2433;
+  --bg-card-hover: #252b3b;
+  --bg-surface: #2a3040;
+  --border-primary: #2e3548;
+  --border-secondary: #3a4158;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent-blue: #3b82f6;
+  --accent-blue-hover: #2563eb;
+  --accent-indigo: #6366f1;
+  --accent-emerald: #10b981;
+  --accent-amber: #f59e0b;
+  --accent-red: #ef4444;
+  --accent-orange: #f97316;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-secondary) transparent;
+}
+
+/* Global overflow safety. The 3D background and several decorative
+   blur elements (w-96 / w-64) are allowed to overflow visually
+   behind their parent, but they must NEVER cause horizontal page
+   scroll on small screens. */
+html,
+body {
+  overflow-x: hidden;
+  max-width: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-width: 0;
+}
+
+/* Any element that has Tailwind's `container`/fixed widths should not
+   push past the viewport. We wrap the rule so children that need
+   to bleed visually (decorative blurs) still can via
+   `overflow-visible` on the immediate parent. */
+#__next,
+main,
+section,
+header,
+footer,
+nav {
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* Long unbroken strings (emails, URLs, complaint numbers) should wrap
+   cleanly on small screens so they never cause horizontal overflow. */
+body,
+p,
+span,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+button,
+a,
+li,
+td,
+th,
+div {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Cinematic video container helper — used in the demo and any other
+   embed so 16:9 is always preserved. */
+.aspect-cinematic {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  height: auto;
+}
+
+/* Selection */
+::selection {
+  background: rgba(59, 130, 246, 0.3);
+  color: #f1f5f9;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideInUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes progress {
+  0% { width: 0%; }
+  100% { width: 100%; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.5s ease-out forwards;
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 0.4s ease-out forwards;
+}
+
+.animate-slide-in-up {
+  animation: slideInUp 0.5s ease-out forwards;
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-surface) 50%, var(--bg-tertiary) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.animate-progress {
+  animation: progress 2s ease-out forwards;
+}
+
+/* Stagger children animations */
+.stagger-children > * {
+  opacity: 0;
+  animation: fadeIn 0.4s ease-out forwards;
+}
+
+.stagger-children > *:nth-child(1) { animation-delay: 0.05s; }
+.stagger-children > *:nth-child(2) { animation-delay: 0.1s; }
+.stagger-children > *:nth-child(3) { animation-delay: 0.15s; }
+.stagger-children > *:nth-child(4) { animation-delay: 0.2s; }
+.stagger-children > *:nth-child(5) { animation-delay: 0.25s; }
+.stagger-children > *:nth-child(6) { animation-delay: 0.3s; }
+.stagger-children > *:nth-child(7) { animation-delay: 0.35s; }
+.stagger-children > *:nth-child(8) { animation-delay: 0.4s; }
+
+/* Glass effect */
+.glass {
+  background: rgba(30, 36, 51, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-primary);
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #3b82f6, #6366f1, #8b5cf6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Map placeholder styling */
+.map-grid {
+  background-image:
+    linear-gradient(rgba(59, 130, 246, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.05) 1px, transparent 1px);
+  background-size: 40px 40px;
 }
