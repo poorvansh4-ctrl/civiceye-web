@@ -41,12 +41,29 @@ CREATE TABLE IF NOT EXISTS complaints (
   priority_score INTEGER NOT NULL DEFAULT 50 CHECK (priority_score >= 0 AND priority_score <= 100),
   department TEXT NOT NULL DEFAULT 'Municipal Corporation',
 
-  -- AI evidence authenticity assessment
-  authenticity_status TEXT CHECK (authenticity_status IN ('likely_authentic', 'suspicious', 'inconclusive')),
-  authenticity_confidence INTEGER CHECK (authenticity_confidence >= 0 AND authenticity_confidence <= 100),
-  authenticity_explanation TEXT,
+   -- AI evidence authenticity assessment
+   authenticity_status TEXT CHECK (authenticity_status IN ('likely_authentic', 'suspicious', 'inconclusive')),
+   authenticity_confidence INTEGER CHECK (authenticity_confidence >= 0 AND authenticity_confidence <= 100),
+   authenticity_explanation TEXT,
 
-  status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('submitted', 'under_review', 'assigned', 'in_progress', 'resolved')),
+   -- Full Gemini AI analysis result (saved on successful analysis, reused when
+   -- reopening a complaint so Gemini is never called again for an existing report).
+   ai_analysis JSONB,
+
+   -- AI-detected issue title (from Gemini's detected_issue, NOT the citizen's
+   -- chosen category). Stored separately for easy display/querying.
+   detected_issue TEXT,
+   ai_explanation TEXT,
+
+   -- Duplicate detection results (from the AI analysis phase)
+   is_duplicate BOOLEAN DEFAULT FALSE,
+   duplicate_confidence INTEGER DEFAULT 0 CHECK (duplicate_confidence >= 0 AND duplicate_confidence <= 100),
+   duplicate_complaint_id TEXT,
+   duplicate_complaint_number TEXT,
+   duplicate_distance_meters INTEGER,
+   duplicate_reason TEXT,
+
+   status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('submitted', 'under_review', 'assigned', 'in_progress', 'resolved')),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -59,6 +76,21 @@ CREATE INDEX IF NOT EXISTS idx_complaints_severity ON complaints(severity);
 CREATE INDEX IF NOT EXISTS idx_complaints_created_at ON complaints(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_profiles_role ON profiles(role);
 CREATE INDEX IF NOT EXISTS idx_complaints_authenticity ON complaints(authenticity_status);
+CREATE INDEX IF NOT EXISTS idx_complaints_detected_issue ON complaints(detected_issue);
+CREATE INDEX IF NOT EXISTS idx_complaints_is_duplicate ON complaints(is_duplicate);
+
+-- Add new columns to existing tables (CREATE TABLE IF NOT EXISTS only creates
+-- columns on a fresh table; ALTER TABLE ensures they are present on tables
+-- that already exist from a previous run of this schema).
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS detected_issue TEXT;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS ai_explanation TEXT;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS is_duplicate BOOLEAN DEFAULT FALSE;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS duplicate_confidence INTEGER DEFAULT 0 CHECK (duplicate_confidence >= 0 AND duplicate_confidence <= 100);
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS duplicate_complaint_id TEXT;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS duplicate_complaint_number TEXT;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS duplicate_distance_meters INTEGER;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS duplicate_reason TEXT;
 
 -- Function to generate complaint number
 CREATE OR REPLACE FUNCTION generate_complaint_number()

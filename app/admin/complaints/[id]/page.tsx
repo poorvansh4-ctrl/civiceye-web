@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AIAnalysisResult as AIAnalysisResultComponent } from "@/components/ai-analysis-result";
 import { EvidenceAnalysisCard, type AuthenticityStatus } from "@/components/evidence-analysis-card";
+import { DuplicateCheckCard } from "@/components/duplicate-check-card";
 import { ReportTimeline } from "@/components/report-timeline";
 import { StatusBadge } from "@/components/status-badge";
 import { SeverityBadge } from "@/components/severity-badge";
@@ -89,6 +90,15 @@ interface ComplaintRow {
   authenticity_status: AuthenticityStatus | null;
   authenticity_confidence: number | null;
   authenticity_explanation: string | null;
+  // Saved AI analysis fields (Gemini result persisted on submit)
+  detected_issue: string | null;
+  ai_explanation: string | null;
+  is_duplicate: boolean | null;
+  duplicate_confidence: number | null;
+  duplicate_complaint_id: string | null;
+  duplicate_complaint_number: string | null;
+  duplicate_distance_meters: number | null;
+  duplicate_reason: string | null;
 }
 
 export default function AdminComplaintDetailPage({ params }: PageProps) {
@@ -105,7 +115,7 @@ export default function AdminComplaintDetailPage({ params }: PageProps) {
         const supabase = createClient();
         const { data, error } = await supabase
           .from("complaints")
-          .select("id, complaint_number, category, description, image_url, evidence_video_url, address, latitude, longitude, ai_confidence, severity, priority_score, department, status, created_at, updated_at, user_id, authenticity_status, authenticity_confidence, authenticity_explanation")
+          .select("id, complaint_number, category, description, image_url, evidence_video_url, address, latitude, longitude, ai_confidence, severity, priority_score, department, status, created_at, updated_at, user_id, authenticity_status, authenticity_confidence, authenticity_explanation, detected_issue, ai_explanation, is_duplicate, duplicate_confidence, duplicate_complaint_id, duplicate_complaint_number, duplicate_distance_meters, duplicate_reason")
           .eq("id", id)
           .maybeSingle();
         if (error) {
@@ -148,6 +158,7 @@ export default function AdminComplaintDetailPage({ params }: PageProps) {
   }
 
   const categoryLabel = CATEGORY_LABEL[report.category] ?? report.category;
+  const detectedIssue = report.detected_issue || categoryLabel;
   const currentIdx = TIMELINE_STEPS.findIndex((s) => s.status === report.status);
   const timeline = TIMELINE_STEPS.map((s, idx) => {
     const completed = currentIdx >= 0 && idx <= currentIdx;
@@ -327,13 +338,15 @@ export default function AdminComplaintDetailPage({ params }: PageProps) {
           </Card>
 
           <AIAnalysisResultComponent
-            issueType={categoryLabel}
+            issueType={detectedIssue}
             confidence={(report.ai_confidence ?? 0) > 1 ? (report.ai_confidence ?? 0) / 100 : (report.ai_confidence ?? 0)}
             severity={(report.severity ?? "medium").toString().toUpperCase()}
             priorityScore={report.priority_score}
             department={report.department}
             reasons={[
-              `Detected as ${categoryLabel} by CivicEye AI.`,
+              report.ai_explanation
+                ? report.ai_explanation
+                : `Detected as ${detectedIssue} by CivicEye AI.`,
               report.address ? `Reported at ${report.address}.` : "Location captured from device GPS.",
               `Severity: ${report.severity}.`,
               `Recommended department: ${report.department}.`,
@@ -342,13 +355,15 @@ export default function AdminComplaintDetailPage({ params }: PageProps) {
 
           {report.authenticity_status && (
             <EvidenceAnalysisCard
-              issueType={categoryLabel}
+              issueType={detectedIssue}
               confidence={report.ai_confidence ?? 0}
               severity={(report.severity ?? "medium").toString().toUpperCase()}
               priorityScore={report.priority_score}
               department={report.department}
               reasons={[
-                `Detected as ${categoryLabel} by CivicEye AI.`,
+                report.ai_explanation
+                  ? report.ai_explanation
+                  : `Detected as ${detectedIssue} by CivicEye AI.`,
                 report.address ? `Reported at ${report.address}.` : "Location captured from device GPS.",
               ]}
               authenticityStatus={report.authenticity_status}
@@ -356,6 +371,25 @@ export default function AdminComplaintDetailPage({ params }: PageProps) {
               authenticityExplanation={
                 report.authenticity_explanation ?? "No authenticity explanation provided."
               }
+            />
+          )}
+
+          {report.is_duplicate && (
+            <DuplicateCheckCard
+              isDuplicate={!!report.is_duplicate}
+              duplicateConfidence={report.duplicate_confidence ?? 0}
+              duplicateComplaintId={report.duplicate_complaint_id}
+              duplicateComplaintNumber={
+                report.duplicate_complaint_number
+              }
+              duplicateDistanceMeters={
+                report.duplicate_distance_meters
+              }
+              duplicateReason={
+                report.duplicate_reason ||
+                "Possible duplicate of an existing nearby complaint."
+              }
+              showSubmitAnyway={false}
             />
           )}
 
@@ -452,8 +486,8 @@ export default function AdminComplaintDetailPage({ params }: PageProps) {
                 <p className="text-xs text-slate-500 mb-1">Current Department</p>
                 <p className="font-semibold text-white">{report.department}</p>
                 <p className="text-xs text-slate-400 mt-2">
-                  Detected as {categoryLabel.toLowerCase()} issue with priority {report.priority_score}.
-                </p>
+                   Detected as {detectedIssue.toLowerCase()} issue with priority {report.priority_score}.
+                 </p>
               </div>
               <div className="space-y-2">
                 <label className="text-xs text-slate-500">Change Department</label>

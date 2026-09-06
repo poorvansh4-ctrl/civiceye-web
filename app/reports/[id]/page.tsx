@@ -16,6 +16,7 @@ import { Navbar } from "@/components/navbar";
 import { Footer } from "@/components/footer";
 import { AIAnalysisResult } from "@/components/ai-analysis-result";
 import { EvidenceAnalysisCard, type AuthenticityStatus } from "@/components/evidence-analysis-card";
+import { DuplicateCheckCard } from "@/components/duplicate-check-card";
 import { ReportTimeline } from "@/components/report-timeline";
 import { StatusBadge } from "@/components/status-badge";
 import { PriorityBadge } from "@/components/priority-badge";
@@ -24,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { formatDateTime } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/client";
+import { AIAnalysisResponse } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
@@ -78,6 +80,17 @@ interface ComplaintRow {
   authenticity_status: AuthenticityStatus | null;
   authenticity_confidence: number | null;
   authenticity_explanation: string | null;
+  // Saved AI analysis (full Gemini result) — used when reopening so Gemini
+  // is never called again for an existing complaint.
+  detected_issue: string | null;
+  ai_explanation: string | null;
+  is_duplicate: boolean | null;
+  duplicate_confidence: number | null;
+  duplicate_complaint_id: string | null;
+  duplicate_complaint_number: string | null;
+  duplicate_distance_meters: number | null;
+  duplicate_reason: string | null;
+  ai_analysis: AIAnalysisResponse | null;
 }
 
 export default function ReportDetailPage({ params }: PageProps) {
@@ -98,7 +111,7 @@ export default function ReportDetailPage({ params }: PageProps) {
         }
         const { data, error } = await supabase
           .from('complaints')
-          .select('id, complaint_number, category, description, image_url, evidence_video_url, address, latitude, longitude, ai_confidence, severity, priority_score, department, status, created_at, updated_at, user_id, authenticity_status, authenticity_confidence, authenticity_explanation')
+          .select('id, complaint_number, category, description, image_url, evidence_video_url, address, latitude, longitude, ai_confidence, severity, priority_score, department, status, created_at, updated_at, user_id, authenticity_status, authenticity_confidence, authenticity_explanation, detected_issue, ai_explanation, is_duplicate, duplicate_confidence, duplicate_complaint_id, duplicate_complaint_number, duplicate_distance_meters, duplicate_reason, ai_analysis')
           .eq('id', id)
           .maybeSingle();
         if (error) {
@@ -200,6 +213,11 @@ export default function ReportDetailPage({ params }: PageProps) {
   const lng = report.longitude ?? 0;
   const coordText = lat && lng ? `${lat.toFixed(6)}, ${lng.toFixed(6)}` : '';
 
+  // Use the real Gemini-detected issue when available (saved on submit),
+  // falling back to the citizen-chosen category label only when the AI
+  // analysis was not persisted. Reopening a complaint NEVER re-calls Gemini.
+  const detectedIssue = report.detected_issue || report.ai_analysis?.detected_issue || categoryLabel;
+
   return (
     <div className="min-h-screen bg-[var(--bg-primary)] flex flex-col">
       <Navbar />
@@ -250,14 +268,16 @@ export default function ReportDetailPage({ params }: PageProps) {
 
             {(report.authenticity_status || report.ai_confidence != null) && (
               <EvidenceAnalysisCard
-                issueType={categoryLabel}
+                issueType={detectedIssue}
                 confidence={report.ai_confidence ?? 0}
                 severity={(report.severity ?? 'medium').toString().toUpperCase()}
                 priorityScore={report.priority_score ?? 0}
                 department={report.department ?? 'Municipal Corporation'}
                 reasons={[
-                  `Detected as ${categoryLabel} by CivicEye AI.`,
-                  report.address ? `Reported at ${report.address}.` : 'Location captured from device GPS.',
+                  report.ai_explanation
+                    ? report.ai_explanation
+                    : `Detected as ${detectedIssue} by CivicEye AI.`,
+                  ...(report.address ? [`Reported at ${report.address}.`] : []),
                   `Severity: ${report.severity}.`,
                   `Recommended department: ${report.department}.`,
                 ]}
@@ -274,17 +294,38 @@ export default function ReportDetailPage({ params }: PageProps) {
 
             {!report.authenticity_status && (
               <AIAnalysisResult
-                issueType={categoryLabel}
+                issueType={detectedIssue}
                 confidence={confidence}
                 severity={(report.severity ?? 'medium').toString().toUpperCase()}
                 priorityScore={report.priority_score ?? 0}
                 department={report.department ?? 'Municipal Corporation'}
                 reasons={[
-                  `Detected as ${categoryLabel} by CivicEye AI.`,
+                  report.ai_explanation
+                    ? report.ai_explanation
+                    : `Detected as ${detectedIssue} by CivicEye AI.`,
                   report.address ? `Reported at ${report.address}.` : 'Location captured from device GPS.',
                   `Severity: ${report.severity}.`,
                   `Recommended department: ${report.department}.`,
                 ]}
+              />
+            )}
+
+            {report.is_duplicate && (
+              <DuplicateCheckCard
+                isDuplicate={!!report.is_duplicate}
+                duplicateConfidence={report.duplicate_confidence ?? 0}
+                duplicateComplaintId={report.duplicate_complaint_id}
+                duplicateComplaintNumber={
+                  report.duplicate_complaint_number
+                }
+                duplicateDistanceMeters={
+                  report.duplicate_distance_meters
+                }
+                duplicateReason={
+                  report.duplicate_reason ||
+                  'Possible duplicate of an existing nearby complaint.'
+                }
+                showSubmitAnyway={false}
               />
             )}
 

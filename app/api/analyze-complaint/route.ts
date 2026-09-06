@@ -4,27 +4,15 @@ import { createServerClient } from "@supabase/ssr";
 /**
  * Server-side proxy for the CivicEye FastAPI /analyze endpoint.
  *
- * Why this exists:
- *   The frontend runs in the browser and the FastAPI backend listens on a
- *   configurable URL (via `NEXT_PUBLIC_API_URL`). Calling the backend
- *   directly from the browser can fail with "Load failed" / "Failed to
- *   fetch" whenever the page is opened at an origin not on the backend
- *   CORS allow-list (e.g. 192.168.x.x:3000, https://, or when the
- *   browser's Private Network Access policy blocks the cross-origin
- *   request).
- *
- *   Proxying through a same-origin Next.js Route Handler avoids all of
- *   that: the browser only ever talks to the Next.js server, which
- *   forwards the multipart request to the FastAPI backend over the
- *   server-side loopback. The Gemini API key stays backend-only on the
- *   FastAPI side and is never exposed to the browser.
+ * The browser talks only to this same-origin Next.js route.
+ * Next.js forwards the multipart request to the FastAPI backend.
+ * The Gemini API key remains backend-only.
  */
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Allow uploads up to 10 MB through the Next.js proxy so the browser
-// does not reject the multipart body before it reaches this handler.
+// Allow uploads up to 10 MB.
 export const maxBodySize = 10 * 1024 * 1024;
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "");
@@ -35,7 +23,31 @@ if (!BACKEND_URL) {
   );
 }
 
-const UPSTREAM_TIMEOUT_MS = 95_000;
+// Backend timeout is 180 seconds.
+// Proxy timeout is slightly higher so the backend gets enough time.
+const UPSTREAM_TIMEOUT_MS = 200_000;
+
+// Safety-net TTL for duplicate-analysis protection.
+const DEDUP_TTL_MS = 120_000;
+
+const inFlightAnalyses = new Map<string, { cleanup: NodeJS.Timeout }>();
+
+function getAnalyzeDedupKey(form: FormData): string | null {
+  const token = form.get("user_access_token");
+
+  if (token && typeof token === "string" && token.length > 0) {
+    return `user:${token.slice(-16)}`;
+  }
+
+  const desc = asString(form.get("description"));
+  const cat = asString(form.get("category"));
+  const lat = asString(form.get("latitude"));
+  const lng = asString(form.get("longitude"));
+  const video = form.get("video");
+  const size = video instanceof File ? video.size : 0;
+
+  return `content:${desc}:${cat}:${lat}:${lng}:${size}`;
+}
 
 function asString(v: FormDataEntryValue | null): string {
   if (v === null || typeof v === "string") return v ?? "";
@@ -44,14 +56,18 @@ function asString(v: FormDataEntryValue | null): string {
 
 function asNumber(v: FormDataEntryValue | null): number | null {
   const s = asString(v).trim();
+
   if (!s) return null;
+
   const n = Number(s);
+
   return Number.isFinite(n) ? n : null;
 }
 
 export async function POST(request: NextRequest) {
   const contentLength = request.headers.get("content-length");
   const contentType = request.headers.get("content-type") || "";
+
   console.info(
     `[CivicEye] /api/analyze-complaint received: content-length=%s type=%s`,
     contentLength,
@@ -59,10 +75,15 @@ export async function POST(request: NextRequest) {
   );
 
   let inbound: FormData;
+
   try {
     inbound = await request.formData();
   } catch (err) {
-    console.error("[CivicEye] /api/analyze-complaint formData parse error:", err);
+    console.error(
+      "[CivicEye] /api/analyze-complaint formData parse error:",
+      err
+    );
+
     return Response.json(
       {
         detail: `Could not parse multipart request body: ${
@@ -74,8 +95,10 @@ export async function POST(request: NextRequest) {
   }
 
   const videoEntry = inbound.get("video");
+
   if (videoEntry && typeof videoEntry !== "string") {
     const vSize = (videoEntry as File).size;
+
     console.info(
       `[CivicEye] /api/analyze-complaint video file: name=%s type=%s size=%sMB`,
       (videoEntry as File).name,
@@ -84,13 +107,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // If we get here, the body was parsed successfully. The 413 (if any)
-  // would have come from an upstream proxy (Cloudflare Tunnel, Vercel,
-  // etc.) before reaching this handler. We surface a clear error so the
-  // frontend can tell the user which layer rejected the request.
-  const totalSize = inbound.get("video") instanceof File
-    ? (inbound.get("video") as File).size
-    : 0;
+  const totalSize =
+    inbound.get("video") instanceof File
+      ? (inbound.get("video") as File).size
+      : 0;
+
   console.info(
     `[CivicEye] /api/analyze-complaint parsed successfully, forwarding to upstream. Total form size≈%sMB`,
     (totalSize / 1024 / 1024).toFixed(2)
@@ -113,11 +134,48 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Read the logged-in Supabase session via the SSR helper so we
-  // forward the right access token to the backend. The backend uses
-  // it to run duplicate detection under the user's RLS-restricted
-  // view of the complaints table.
+  // ------------------------------------------------------------
+  // SERVER-SIDE DEDUPLICATION
+  // Prevent duplicate Gemini analysis requests.
+  // ------------------------------------------------------------
+
+  const dedupKey = getAnalyzeDedupKey(inbound);
+
+  if (dedupKey) {
+    if (inFlightAnalyses.has(dedupKey)) {
+      console.warn(
+        `[CivicEye] Duplicate /analyze rejected (in-flight dedup): key=%s`,
+        dedupKey
+      );
+
+      return Response.json(
+        {
+          detail:
+            "An AI analysis is already in progress for this complaint. Please wait for it to complete before submitting another.",
+          code: "ANALYSIS_IN_PROGRESS",
+        },
+        { status: 409 }
+      );
+    }
+
+    inFlightAnalyses.set(dedupKey, {
+      cleanup: setTimeout(() => {
+        inFlightAnalyses.delete(dedupKey);
+
+        console.warn(
+          `[CivicEye] In-flight analyze lock auto-released after ${DEDUP_TTL_MS}ms: key=%s`,
+          dedupKey
+        );
+      }, DEDUP_TTL_MS),
+    });
+  }
+
+  // ------------------------------------------------------------
+  // SUPABASE SESSION
+  // ------------------------------------------------------------
+
   let accessToken: string | null = null;
+
   try {
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -127,50 +185,92 @@ export async function POST(request: NextRequest) {
           getAll() {
             return request.cookies.getAll();
           },
+
           setAll() {
-            /* no-op; route handlers don't refresh the session */
+            // No-op. Route handler does not refresh the session.
           },
         },
       }
     );
+
     const { data } = await supabase.auth.getSession();
+
     accessToken = data.session?.access_token ?? null;
   } catch (err) {
-    // Continue without an access token. Duplicate detection will
-    // simply be skipped on the backend.
-    console.warn("[analyze-complaint] Could not read Supabase session:", err);
+    console.warn(
+      "[analyze-complaint] Could not read Supabase session:",
+      err
+    );
   }
 
+  // ------------------------------------------------------------
+  // BUILD UPSTREAM FORM
+  // ------------------------------------------------------------
+
   const upstreamForm = new FormData();
+
   upstreamForm.append("description", description);
   upstreamForm.append("category", category);
-  if (latitude !== null) upstreamForm.append("latitude", String(latitude));
-  if (longitude !== null) upstreamForm.append("longitude", String(longitude));
-  if (locationName) upstreamForm.append("location_name", locationName);
-  if (accessToken) upstreamForm.append("user_access_token", accessToken);
+
+  if (latitude !== null) {
+    upstreamForm.append("latitude", String(latitude));
+  }
+
+  if (longitude !== null) {
+    upstreamForm.append("longitude", String(longitude));
+  }
+
+  if (locationName) {
+    upstreamForm.append("location_name", locationName);
+  }
+
+  if (accessToken) {
+    upstreamForm.append("user_access_token", accessToken);
+  }
+
+  // Video
   if (videoEntry && typeof videoEntry !== "string") {
     const filename =
       (videoEntry as File).name || `evidence-${Date.now()}.webm`;
+
     const type =
       (videoEntry as File).type || "video/webm";
+
     upstreamForm.append(
       "video",
-      new Blob([await videoEntry.arrayBuffer()], { type }),
-      filename
-    );
-  }
-  if (imageEntry && typeof imageEntry !== "string") {
-    const filename = (imageEntry as File).name || "evidence.jpg";
-    const type = (imageEntry as File).type || "image/jpeg";
-    upstreamForm.append(
-      "image",
-      new Blob([await imageEntry.arrayBuffer()], { type }),
+      new Blob([await videoEntry.arrayBuffer()], {
+        type,
+      }),
       filename
     );
   }
 
+  // Image
+  if (imageEntry && typeof imageEntry !== "string") {
+    const filename =
+      (imageEntry as File).name || "evidence.jpg";
+
+    const type =
+      (imageEntry as File).type || "image/jpeg";
+
+    upstreamForm.append(
+      "image",
+      new Blob([await imageEntry.arrayBuffer()], {
+        type,
+      }),
+      filename
+    );
+  }
+
+  // ------------------------------------------------------------
+  // FORWARD TO FASTAPI BACKEND
+  // ------------------------------------------------------------
+
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, UPSTREAM_TIMEOUT_MS);
 
   try {
     const upstream = await fetch(`${BACKEND_URL}/analyze`, {
@@ -178,55 +278,84 @@ export async function POST(request: NextRequest) {
       body: upstreamForm,
       signal: controller.signal,
       headers: {
-        // Intentionally NOT setting Content-Type. `fetch` with a
-        // FormData body will set the multipart boundary automatically.
+        // Do NOT manually set Content-Type.
+        // fetch automatically creates the multipart boundary.
         Accept: "application/json",
       },
     });
 
     const text = await upstream.text();
+
     let payload: unknown = {};
+
     try {
-      payload = text ? JSON.parse(text) : {};
+      payload = text
+        ? JSON.parse(text)
+        : {};
     } catch {
-      payload = { detail: text || "Upstream returned non-JSON response" };
+      payload = {
+        detail:
+          text || "Upstream returned non-JSON response",
+      };
     }
 
-    return new Response(JSON.stringify(payload), {
-      status: upstream.status,
-      headers: {
-        "Content-Type":
-          upstream.headers.get("content-type") || "application/json",
-        "Cache-Control": "no-store",
-      },
-    });
+    return new Response(
+      JSON.stringify(payload),
+      {
+        status: upstream.status,
+        headers: {
+          "Content-Type":
+            upstream.headers.get("content-type") ||
+            "application/json",
+
+          "Cache-Control": "no-store",
+        },
+      }
+    );
   } catch (err) {
     const isAbort =
       err instanceof Error &&
-      (err.name === "AbortError" || err.name === "TimeoutError");
+      (err.name === "AbortError" ||
+        err.name === "TimeoutError");
+
     const detail = isAbort
       ? `The AI backend did not respond within ${UPSTREAM_TIMEOUT_MS}ms.`
-      : `The AI backend is unreachable.`;
+      : "The AI backend is unreachable.";
 
     return Response.json(
       {
         detail,
-        code: isAbort ? "TIMEOUT" : "UPSTREAM_UNREACHABLE",
+        code: isAbort
+          ? "TIMEOUT"
+          : "UPSTREAM_UNREACHABLE",
       },
-      { status: isAbort ? 504 : 502 }
+      {
+        status: isAbort ? 504 : 502,
+      }
     );
   } finally {
     clearTimeout(timer);
+
+    if (dedupKey) {
+      const entry = inFlightAnalyses.get(dedupKey);
+
+      if (entry) {
+        clearTimeout(entry.cleanup);
+        inFlightAnalyses.delete(dedupKey);
+      }
+    }
   }
 }
 
 export async function OPTIONS() {
   return new Response(null, {
     status: 204,
+
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Accept",
+      "Access-Control-Allow-Headers":
+        "Content-Type, Accept",
       "Access-Control-Max-Age": "600",
     },
   });

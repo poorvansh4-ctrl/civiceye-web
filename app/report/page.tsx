@@ -215,6 +215,11 @@ export default function ReportPage() {
             message =
               "AI analysis quota is temporarily unavailable. Please try again later.";
             break;
+          case "ANALYSIS_IN_PROGRESS":
+            message =
+              err.message ||
+              "An AI analysis is already in progress for this complaint. Please wait for it to finish.";
+            break;
           case "AI_TIMEOUT":
           case "GEMINI_SERVER_ERROR":
           case "GEMINI_MODEL_UNAVAILABLE":
@@ -235,6 +240,10 @@ export default function ReportPage() {
             if (err.status === 429) {
               message =
                 "AI analysis quota is temporarily unavailable. Please try again later.";
+            } else if (err.status === 409) {
+              message =
+                err.message ||
+                "An AI analysis is already in progress for this complaint.";
             } else if (err.status === 503) {
               message = "AI provider is not configured. The backend returned 503.";
             } else if (err.status === 504) {
@@ -368,6 +377,10 @@ export default function ReportPage() {
       const finalAddress = location || detectedAddress || `Location detected`;
 
       // 2) Insert complaint row with all evidence + AI fields.
+      //    We save the COMPLETE AI analysis result (returned by Gemini) both
+      //    as a JSONB blob (`ai_analysis`) and as individual columns so it
+      //    can be queried directly and displayed when the complaint is
+      //    reopened — without ever calling Gemini again.
       //    Use .select() to receive the ACTUAL inserted row, including the
       //    database-generated UUID (`id`) and the trigger-generated
       //    `complaint_number`. We must use the real UUID for navigation,
@@ -389,6 +402,15 @@ export default function ReportPage() {
           authenticity_status: analysisResult.authenticity_status,
           authenticity_confidence: analysisResult.authenticity_confidence,
           authenticity_explanation: analysisResult.authenticity_explanation,
+          detected_issue: analysisResult.detected_issue,
+          ai_explanation: analysisResult.explanation,
+          is_duplicate: analysisResult.is_duplicate,
+          duplicate_confidence: analysisResult.duplicate_confidence,
+          duplicate_complaint_id: analysisResult.duplicate_complaint_id,
+          duplicate_complaint_number: analysisResult.duplicate_complaint_number,
+          duplicate_distance_meters: analysisResult.duplicate_distance_meters,
+          duplicate_reason: analysisResult.duplicate_reason,
+          ai_analysis: analysisResult as unknown,
           status: "submitted",
         })
         .select("id, complaint_number")
@@ -850,15 +872,15 @@ export default function ReportPage() {
                       setAnalysisError(null);
                       setSubmitError(null);
                     }}
-                    disabled={submittingLoading}
-                    className="w-full sm:flex-1 min-h-[48px] h-12 sm:h-10 border-[#2e3548] bg-[#0f1419] hover:bg-[#1e2433]"
-                  >
-                    Back to Edit
-                  </Button>
-                  <Button
-                    type="button"
-                    onClick={handleSubmitComplaint}
-                    disabled={submittingLoading}
+                     disabled={submittingLoading || analyzingLoading}
+                     className="w-full sm:flex-1 min-h-[48px] h-12 sm:h-10 border-[#2e3548] bg-[#0f1419] hover:bg-[#1e2433]"
+                   >
+                     Back to Edit
+                   </Button>
+                   <Button
+                     type="button"
+                     onClick={handleSubmitComplaint}
+                     disabled={submittingLoading || analyzingLoading}
                     className="w-full sm:flex-1 min-h-[48px] h-12 sm:h-10 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white"
                   >
                     {submittingLoading ? (
