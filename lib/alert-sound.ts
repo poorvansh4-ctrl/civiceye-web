@@ -46,7 +46,7 @@ const SEVERITY_CONFIGS: Record<AlertSeverity, AlertSoundConfig> = {
   },
 };
 
-const REPEAT_ALERT_INTERVAL = 30000;
+const REPEAT_ALERT_INTERVAL = 60 * 60 * 1000;
 
 class AlertSoundService {
   private audioContext: AudioContext | null = null;

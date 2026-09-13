@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { X, AlertTriangle, Bell, Volume2, VolumeX, MapPin, Zap } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -24,6 +24,36 @@ interface ActiveAlert {
   acknowledged: boolean;
 }
 
+const ALERT_INTERVAL_MS =
+  process.env.NEXT_PUBLIC_ALERT_DEMO_MODE === "true"
+    ? 60 * 1000
+    : 60 * 60 * 1000;
+
+function getAlertTiming(createdAt: string, now: number) {
+  const createdTime = new Date(createdAt).getTime();
+  const elapsedMs = Math.max(0, now - createdTime);
+  const elapsedIntervals = Math.floor(elapsedMs / ALERT_INTERVAL_MS);
+  const nextAlertMs =
+    (elapsedIntervals + 1) * ALERT_INTERVAL_MS - elapsedMs;
+
+  return {
+    elapsedMs,
+    elapsedIntervals,
+    nextAlertMs,
+  };
+}
+
+function formatDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return [hours, minutes, seconds]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+}
+
 export function AdminAlertSystem() {
   const [activeAlerts, setActiveAlerts] = useState<ActiveAlert[]>([]);
   const [soundEnabled, setSoundEnabled] = useState(false);
@@ -31,6 +61,16 @@ export function AdminAlertSystem() {
     typeof Notification !== "undefined" ? Notification.permission : "default"
   );
   const [showAlertPanel, setShowAlertPanel] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
+  // Keep the escalation timer synchronized with real time.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   const handleNewComplaint = useCallback((complaint: ComplaintAlert) => {
     const severity = complaint.severity as AlertSeverity;
@@ -97,6 +137,59 @@ export function AdminAlertSystem() {
       duration: 3000,
     });
   }, []);
+
+  // Escalate unresolved critical/high complaints at every alert interval.
+  useEffect(() => {
+    if (activeAlerts.length === 0) return;
+
+    const checkEscalations = () => {
+      const now = Date.now();
+
+      activeAlerts.forEach((alert) => {
+        if (alert.acknowledged) return;
+        if (alert.severity !== "critical" && alert.severity !== "high") return;
+
+        const timing = getAlertTiming(alert.created_at, now);
+
+        // elapsedIntervals === 0 means the first interval has not completed yet.
+        if (timing.elapsedIntervals < 1) return;
+
+        const storageKey = `civiceye-alert-${alert.id}`;
+        const lastEscalation = Number(localStorage.getItem(storageKey) || "0");
+
+        // Only fire once for each completed interval.
+        if (timing.elapsedIntervals <= lastEscalation) return;
+
+        localStorage.setItem(storageKey, String(timing.elapsedIntervals));
+
+        if (soundEnabled) {
+          alertSoundService.playAlert(alert.severity);
+        }
+
+        if (notificationPermission === "granted") {
+          showBrowserNotification(
+            `ESCALATION: ${alert.category}`,
+            `${alert.complaint_number} unresolved for ${timing.elapsedIntervals} hour(s). Priority: ${alert.priority_score}`,
+            `${alert.id}-escalation-${timing.elapsedIntervals}`
+          );
+        }
+
+        toast.warning(
+          `ESCALATION #${timing.elapsedIntervals}: ${alert.category}`,
+          {
+            description: `${alert.complaint_number} is still unresolved`,
+            duration: 10000,
+          }
+        );
+      });
+    };
+
+    checkEscalations();
+
+    const escalationTimer = window.setInterval(checkEscalations, 1000);
+
+    return () => window.clearInterval(escalationTimer);
+  }, [activeAlerts, soundEnabled, notificationPermission, currentTime]);
 
   useComplaintAlerts({
     onNewComplaint: handleNewComplaint,
